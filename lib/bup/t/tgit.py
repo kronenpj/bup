@@ -266,3 +266,10 @@ def test_commit_parsing():
         restore_env_var('GIT_COMMITTER_EMAIL', orig_committer_email)
     if wvfailure_count() == initial_failures:
         subprocess.call(['rm', '-rf', tmpdir])
+
+
+@wvtest
+def test__git_date_str():
+    WVPASSEQ('0 +0000', git._git_date_str(0, 0))
+    WVPASSEQ('0 -0130', git._git_date_str(0, -90 * 60))
+    WVPASSEQ('0 +0130', git._git_date_str(0, 90 * 60))
