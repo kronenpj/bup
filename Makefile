@@ -97,6 +97,7 @@ runtests-python: all t/tmp
 	TMPDIR="$(test_tmp)" $(PYTHON) wvtest.py t/t*.py lib/*/t/t*.py
 
 cmdline_tests := \
+  t/test-gc.sh \
   t/test-fuse.sh \
   t/test-drecurse.sh \
   t/test-cat-file.sh \
@@ -120,6 +121,9 @@ cmdline_tests := \
   t/test-import-rdiff-backup.sh \
   t/test-xdev.sh \
   t/test.sh
+
+tmp-target-run-test-gc.sh:
+	TMPDIR="$(test_tmp)" GC_TYPE=bloom-gc t/test-gc.sh
 
 # For parallel runs.
 tmp-target-run-test%: all t/tmp
