@@ -124,6 +124,7 @@ cmdline_tests := \
 
 tmp-target-run-test-gc.sh:
 	TMPDIR="$(test_tmp)" GC_TYPE=bloom-gc t/test-gc.sh
+	TMPDIR="$(test_tmp)" GC_TYPE=bloom-gc GC_OPTS=--breadcrumbs t/test-gc.sh
 
 # For parallel runs.
 tmp-target-run-test%: all t/tmp
