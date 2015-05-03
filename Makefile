@@ -97,6 +97,7 @@ runtests-python: all t/tmp
 	TMPDIR="$(test_tmp)" $(PYTHON) wvtest.py t/t*.py lib/*/t/t*.py
 
 cmdline_tests := \
+  t/test-rm.sh \
   t/test-gc.sh \
   t/test-fuse.sh \
   t/test-drecurse.sh \
