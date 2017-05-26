@@ -12,13 +12,10 @@ from bup.helpers import (Sha1, add_error, chunkyreader, debug1, debug2,
                          fdatasync,
                          hostname, localtime, log, merge_iter,
                          mmap_read, mmap_readwrite,
+                         parse_num,
                          progress, qprogress, stat_if_exists,
                          unlink, username, userfullname,
                          utc_offset_str)
-
-
-max_pack_size = 1000*1000*1000  # larger packs will slow down pruning
-max_pack_objects = 200*1000  # cache memory usage is about 83 bytes per object
 
 verbose = 0
 ignore_midx = 0
@@ -33,6 +30,30 @@ _total_steps = 0
 
 class GitError(Exception):
     pass
+
+
+def _git_wait(cmd, p):
+    rv = p.wait()
+    if rv != 0:
+        raise GitError('%s returned %d' % (cmd, rv))
+
+def _git_capture(argv):
+    p = subprocess.Popen(argv, stdout=subprocess.PIPE, preexec_fn = _gitenv())
+    r = p.stdout.read()
+    _git_wait(repr(argv), p)
+    return r
+
+def git_config_get(option, repo_dir=None):
+    cmd = ('git', 'config', '--get', option)
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                         preexec_fn=_gitenv(repo_dir=repo_dir))
+    r = p.stdout.read()
+    rc = p.wait()
+    if rc == 0:
+        return r
+    if rc != 1:
+        raise GitError('%s returned %d' % (cmd, rc))
+    return None
 
 
 def parse_tz_offset(s):
@@ -584,7 +605,9 @@ def _make_objcache():
 class PackWriter:
     """Writes Git objects inside a pack file."""
     def __init__(self, objcache_maker=_make_objcache, compression_level=1,
-                 run_midx=True, on_pack_finish=None):
+                 run_midx=True, on_pack_finish=None,
+                 max_pack_size=None, max_pack_objects=None):
+        self.repo_dir = repo()
         self.file = None
         self.parentfd = None
         self.count = 0
@@ -596,13 +619,25 @@ class PackWriter:
         self.compression_level = compression_level
         self.run_midx=run_midx
         self.on_pack_finish = on_pack_finish
+        if not max_pack_size:
+            max_pack_size = git_config_get('pack.packSizeLimit',
+                                           repo_dir=self.repo_dir)
+            if max_pack_size is not None:
+                max_pack_size = parse_num(max_pack_size)
+            if not max_pack_size:
+                # larger packs slow down pruning
+                max_pack_size = 1000 * 1000 * 1000
+        self.max_pack_size = max_pack_size
+        # cache memory usage is about 83 bytes per object
+        self.max_pack_objects = max_pack_objects if max_pack_objects \
+                                else max(1, self.max_pack_size // 5000)
 
     def __del__(self):
         self.close()
 
     def _open(self):
         if not self.file:
-            objdir = dir=repo('objects')
+            objdir = dir = os.path.join(self.repo_dir, 'objects')
             fd, name = tempfile.mkstemp(suffix='.pack', dir=objdir)
             try:
                 self.file = os.fdopen(fd, 'w+b')
@@ -654,7 +689,8 @@ class PackWriter:
         size, crc = self._raw_write(_encode_packobj(type, content,
                                                     self.compression_level),
                                     sha=sha)
-        if self.outbytes >= max_pack_size or self.count >= max_pack_objects:
+        if self.outbytes >= self.max_pack_size \
+           or self.count >= self.max_pack_objects:
             self.breakpoint()
         return sha
 
@@ -766,8 +802,8 @@ class PackWriter:
             f.close()
 
         obj_list_sha = self._write_pack_idx_v2(self.filename + '.idx', idx, packbin)
-
-        nameprefix = repo('objects/pack/pack-%s' % obj_list_sha)
+        nameprefix = os.path.join(self.repo_dir,
+                                  'objects/pack/pack-' +  obj_list_sha)
         if os.path.exists(self.filename + '.map'):
             os.unlink(self.filename + '.map')
         os.rename(self.filename + '.pack', nameprefix + '.pack')
@@ -778,7 +814,7 @@ class PackWriter:
             os.close(self.parentfd)
 
         if run_midx:
-            auto_midx(repo('objects/pack'))
+            auto_midx(os.path.join(self.repo_dir, 'objects/pack'))
 
         if self.on_pack_finish:
             self.on_pack_finish(nameprefix)
@@ -1056,19 +1092,6 @@ def ver():
         raise GitError('git version %s or higher is required; you have %s'
                        % ('.'.join(needed), '.'.join(_ver)))
     return _ver
-
-
-def _git_wait(cmd, p):
-    rv = p.wait()
-    if rv != 0:
-        raise GitError('%s returned %d' % (cmd, rv))
-
-
-def _git_capture(argv):
-    p = subprocess.Popen(argv, stdout=subprocess.PIPE, preexec_fn = _gitenv())
-    r = p.stdout.read()
-    _git_wait(repr(argv), p)
-    return r
 
 
 class _AbortableIter:
