@@ -203,7 +203,7 @@ def test_long_index():
             os.environ['BUP_MAIN_EXE'] = bup_exe
             os.environ['BUP_DIR'] = bupdir = tmpdir + "/bup"
             git.init_repo(bupdir)
-            w = git.PackWriter()
+            idx = git.PackIdxV2Writer()
             obj_bin = struct.pack('!IIIII',
                     0x00112233, 0x44556677, 0x88990011, 0x22334455, 0x66778899)
             obj2_bin = struct.pack('!IIIII',
@@ -212,13 +212,11 @@ def test_long_index():
                     0x22334455, 0x66778899, 0x00112233, 0x44556677, 0x88990011)
             pack_bin = struct.pack('!IIIII',
                     0x99887766, 0x55443322, 0x11009988, 0x77665544, 0x33221100)
-            idx = list(list() for i in range(256))
-            idx[0].append((obj_bin, 1, 0xfffffffff))
-            idx[0x11].append((obj2_bin, 2, 0xffffffffff))
-            idx[0x22].append((obj3_bin, 3, 0xff))
-            w.count = 3
-            name = tmpdir + '/tmp.idx'
-            r = w._write_pack_idx_v2(name, idx, pack_bin)
+            idx.add(obj_bin, 1, 0xfffffffff)
+            idx.add(obj2_bin, 2, 0xffffffffff)
+            idx.add(obj3_bin, 3, 0xff)
+            name = tmpdir + b'/tmp.idx'
+            r = idx.write(name, pack_bin)
             i = git.PackIdxV2(name, open(name, 'rb'))
             WVPASSEQ(i.find_offset(obj_bin), 0xfffffffff)
             WVPASSEQ(i.find_offset(obj2_bin), 0xffffffffff)
@@ -484,3 +482,70 @@ def test_cat_pipe():
             for buf in it.next():
                 pass
             WVPASSEQ((oidx, typ, size), get_info)
+
+def _create_idx(d, i):
+    idx = git.PackIdxV2Writer()
+    # add 255 vaguely reasonable entries
+    for s in range(255):
+        idx.add(struct.pack('18xBB', i, s), s, 100 * s)
+    packbin = struct.pack('B19x', i)
+    packname = os.path.join(d, b'pack-%s.idx' % packbin.encode('hex'))
+    idx.write(packname, packbin)
+
+@wvtest
+def test_midx_close():
+    fddir = b'/proc/self/fd'
+    try:
+        os.listdir(fddir)
+    except Exception:
+        # not supported, not Linux, I guess
+        return
+
+    def openfiles():
+        for fd in os.listdir(fddir):
+            try:
+                yield os.readlink(os.path.join(fddir, fd))
+            except OSError:
+                pass
+
+    def force_midx(objdir):
+        args = [path.exe(), b'midx', b'--auto', b'--dir', objdir]
+        check_call(args)
+
+    with no_lingering_errors(), \
+         test_tempdir(b'bup-tgit-') as tmpdir:
+        environ[b'BUP_DIR'] = bupdir = tmpdir + b'/bup'
+        git.init_repo(bupdir)
+        # create a few dummy idxes
+        for i in range(10):
+            _create_idx(tmpdir, i)
+        git.auto_midx(tmpdir)
+        l = git.PackIdxList(tmpdir)
+        # this doesn't exist (yet)
+        WVPASSEQ(None, l.exists(struct.pack('18xBB', 10, 0)))
+        for i in range(10, 15):
+            _create_idx(tmpdir, i)
+        # delete the midx ...
+        # TODO: why do we need to? git.auto_midx() below doesn't?!
+        for fn in os.listdir(tmpdir):
+            if fn.endswith(b'.midx'):
+                os.unlink(os.path.join(tmpdir, fn))
+        # and make a new one
+        git.auto_midx(tmpdir)
+        # check it still doesn't exist - we haven't refreshed
+        WVPASSEQ(None, l.exists(struct.pack('18xBB', 10, 0)))
+        # check that we still have the midx open, this really
+        # just checks more for the kernel API ('deleted' string)
+        for fn in openfiles():
+            if not b'midx-' in fn:
+                continue
+            WVPASSEQ(True, b'deleted' in fn)
+        # refresh the PackIdxList
+        l.refresh()
+        # and check that an object in pack 10 exists now
+        WVPASSEQ(True, l.exists(struct.pack('18xBB', 10, 0)))
+        for fn in openfiles():
+            if not b'midx-' in fn:
+                continue
+            # check that we don't have it open anymore
+            WVPASSEQ(False, b'deleted' in fn)
